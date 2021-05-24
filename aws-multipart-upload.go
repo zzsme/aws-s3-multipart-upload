@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"net/http"
 	"os"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -20,6 +19,7 @@ const (
 	awsSecretAccessKey = "Your secret key"
 	awsBucketRegion    = "S3 bucket region"
 	awsBucketName      = "S3 bucket name"
+	awsEndPoint        = "S3 endpoint"
 )
 
 func main() {
@@ -28,10 +28,11 @@ func main() {
 	if err != nil {
 		fmt.Printf("bad credentials: %s", err)
 	}
-	cfg := aws.NewConfig().WithRegion(awsBucketRegion).WithCredentials(creds)
+	cfg := aws.NewConfig().WithRegion(awsBucketRegion).WithCredentials(creds).WithEndpoint(awsEndPoint)
 	svc := s3.New(session.New(), cfg)
 
 	file, err := os.Open("test.jpg")
+	key := "test.jpg"
 	if err != nil {
 		fmt.Printf("err opening file: %s", err)
 		return
@@ -39,15 +40,10 @@ func main() {
 	defer file.Close()
 	fileInfo, _ := file.Stat()
 	size := fileInfo.Size()
-	buffer := make([]byte, size)
-	fileType := http.DetectContentType(buffer)
-	file.Read(buffer)
 
-	path := "/media/" + file.Name()
 	input := &s3.CreateMultipartUploadInput{
-		Bucket:      aws.String(awsBucketName),
-		Key:         aws.String(path),
-		ContentType: aws.String(fileType),
+		Bucket: aws.String(awsBucketName),
+		Key:    aws.String(key),
 	}
 
 	resp, err := svc.CreateMultipartUpload(input)
@@ -60,25 +56,38 @@ func main() {
 	var curr, partLength int64
 	var remaining = size
 	var completedParts []*s3.CompletedPart
+
 	partNumber := 1
+	s := make([]byte, maxPartSize)
+
 	for curr = 0; remaining != 0; curr += partLength {
 		if remaining < maxPartSize {
 			partLength = remaining
 		} else {
 			partLength = maxPartSize
 		}
-		completedPart, err := uploadPart(svc, resp, buffer[curr:curr+partLength], partNumber)
+
+		nr, err := file.Read(s[:partLength])
 		if err != nil {
-			fmt.Println(err.Error())
-			err := abortMultipartUpload(svc, resp)
-			if err != nil {
-				fmt.Println(err.Error())
-			}
+			fmt.Println(err)
 			return
 		}
-		remaining -= partLength
-		partNumber++
-		completedParts = append(completedParts, completedPart)
+		defer file.Close()
+
+		if nr > 0 {
+			completedPart, err := uploadPart(svc, resp, s[:partLength], partNumber)
+			if err != nil {
+				err := abortMultipartUpload(svc, resp)
+				if err != nil {
+					fmt.Println(err.Error())
+				}
+				return
+			}
+			remaining -= partLength
+			partNumber++
+			completedParts = append(completedParts, completedPart)
+		}
+
 	}
 
 	completeResponse, err := completeMultipartUpload(svc, resp, completedParts)
